@@ -1,0 +1,5 @@
+{
+  "name": "KitchenBuddy: Smart Family Food Manager",
+  "description": "A comprehensive household inventory, meal planning, and community sharing PWA with AI-powered assistance.",
+  "requestFramePermissions": ["camera", "geolocation", "microphone"]
+}

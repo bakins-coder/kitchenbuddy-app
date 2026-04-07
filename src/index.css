@@ -1,0 +1,23 @@
+@import "tailwindcss";
+
+@theme {
+  --animate-scan: scan 2s linear infinite;
+
+  @keyframes scan {
+    0%, 100% { transform: translateY(-40px); }
+    50% { transform: translateY(40px); }
+  }
+}
+
+@layer base {
+  .custom-scrollbar::-webkit-scrollbar {
+    width: 4px;
+  }
+  .custom-scrollbar::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  .custom-scrollbar::-webkit-scrollbar-thumb {
+    background: #fed7aa;
+    border-radius: 10px;
+  }
+}

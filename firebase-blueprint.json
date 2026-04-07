@@ -1,0 +1,157 @@
+{
+  "entities": {
+    "User": {
+      "title": "User",
+      "description": "User profile and preferences",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string" },
+        "displayName": { "type": "string" },
+        "email": { "type": "string", "format": "email" },
+        "photoURL": { "type": "string" },
+        "role": { "type": "string", "enum": ["admin", "co-owner", "member"] },
+        "dietaryPreferences": { "type": "array", "items": { "type": "string" } },
+        "householdId": { "type": "string" }
+      },
+      "required": ["uid", "email", "role"]
+    },
+    "Household": {
+      "title": "Household",
+      "description": "A group of users sharing inventory",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" },
+        "adminId": { "type": "string" },
+        "members": { "type": "array", "items": { "type": "string" } }
+      },
+      "required": ["name", "adminId"]
+    },
+    "StorageLocation": {
+      "title": "Storage Location",
+      "description": "Physical storage space like Fridge, Pantry",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" },
+        "type": { "type": "string", "enum": ["fridge", "freezer", "pantry", "shelf", "other"] },
+        "householdId": { "type": "string" }
+      },
+      "required": ["name", "type", "householdId"]
+    },
+    "InventoryItem": {
+      "title": "Inventory Item",
+      "description": "An item in the inventory",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" },
+        "category": { "type": "string" },
+        "quantity": { "type": "number" },
+        "unit": { "type": "string" },
+        "expiryDate": { "type": "string", "format": "date-time" },
+        "storageLocationId": { "type": "string" },
+        "householdId": { "type": "string" },
+        "lowStockThreshold": { "type": "number" },
+        "barcode": { "type": "string" },
+        "nutritionalScore": { "type": "string" },
+        "calories": { "type": "number" },
+        "glycemicIndex": { "type": "number" }
+      },
+      "required": ["name", "quantity", "storageLocationId", "householdId"]
+    },
+    "ShoppingListItem": {
+      "title": "Shopping List Item",
+      "description": "Item to be bought",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" },
+        "quantity": { "type": "number" },
+        "unit": { "type": "string" },
+        "status": { "type": "string", "enum": ["pending", "bought"] },
+        "householdId": { "type": "string" },
+        "addedBy": { "type": "string" }
+      },
+      "required": ["name", "status", "householdId"]
+    },
+    "Recipe": {
+      "title": "Recipe",
+      "description": "A food recipe",
+      "type": "object",
+      "properties": {
+        "title": { "type": "string" },
+        "ingredients": { "type": "array", "items": { "type": "object" } },
+        "instructions": { "type": "array", "items": { "type": "string" } },
+        "dietaryTags": { "type": "array", "items": { "type": "string" } },
+        "dueScore": { "type": "number" },
+        "householdId": { "type": "string" }
+      },
+      "required": ["title", "ingredients", "instructions", "householdId"]
+    },
+    "MealPlan": {
+      "title": "Meal Plan",
+      "description": "Planned meal for a date",
+      "type": "object",
+      "properties": {
+        "date": { "type": "string", "format": "date" },
+        "recipeId": { "type": "string" },
+        "mealType": { "type": "string", "enum": ["breakfast", "lunch", "dinner", "snack"] },
+        "householdId": { "type": "string" }
+      },
+      "required": ["date", "recipeId", "householdId"]
+    },
+    "SharedItem": {
+      "title": "Shared Item",
+      "description": "Item shared with community",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" },
+        "description": { "type": "string" },
+        "ownerId": { "type": "string" },
+        "location": { "type": "object", "properties": { "lat": { "type": "number" }, "lng": { "type": "number" } } },
+        "terms": { "type": "string" },
+        "status": { "type": "string", "enum": ["available", "borrowed"] },
+        "expiryDate": { "type": "string", "format": "date-time" }
+      },
+      "required": ["name", "ownerId", "location", "status"]
+    },
+    "BorrowRequest": {
+      "title": "Borrow Request",
+      "description": "Request to borrow a shared item",
+      "type": "object",
+      "properties": {
+        "itemId": { "type": "string" },
+        "borrowerId": { "type": "string" },
+        "ownerId": { "type": "string" },
+        "startDate": { "type": "string", "format": "date" },
+        "endDate": { "type": "string", "format": "date" },
+        "status": { "type": "string", "enum": ["pending", "approved", "rejected", "returned"] },
+        "termsAccepted": { "type": "boolean" }
+      },
+      "required": ["itemId", "borrowerId", "ownerId", "startDate", "endDate", "status", "termsAccepted"]
+    },
+    "Notification": {
+      "title": "Notification",
+      "description": "App notification",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "type": { "type": "string" },
+        "message": { "type": "string" },
+        "timestamp": { "type": "string", "format": "date-time" },
+        "read": { "type": "boolean" },
+        "link": { "type": "string" }
+      },
+      "required": ["userId", "type", "message", "timestamp", "read"]
+    }
+  },
+  "firestore": {
+    "/users/{uid}": { "schema": "User", "description": "User profiles" },
+    "/households/{householdId}": { "schema": "Household", "description": "Household groups" },
+    "/households/{householdId}/storageLocations/{locationId}": { "schema": "StorageLocation", "description": "Locations within a household" },
+    "/households/{householdId}/inventoryItems/{itemId}": { "schema": "InventoryItem", "description": "Items in household inventory" },
+    "/households/{householdId}/shoppingList/{itemId}": { "schema": "ShoppingListItem", "description": "Household shopping list" },
+    "/households/{householdId}/recipes/{recipeId}": { "schema": "Recipe", "description": "Household recipes" },
+    "/households/{householdId}/mealPlans/{planId}": { "schema": "MealPlan", "description": "Household meal plans" },
+    "/sharedItems/{itemId}": { "schema": "SharedItem", "description": "Items shared with community" },
+    "/borrowRequests/{requestId}": { "schema": "BorrowRequest", "description": "Community borrow requests" },
+    "/notifications/{notificationId}": { "schema": "Notification", "description": "User notifications" }
+  }
+}

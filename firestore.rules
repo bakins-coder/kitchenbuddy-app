@@ -1,0 +1,96 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // ===============================================================
+    // Assumed Data Model
+    // ===============================================================
+    // Collection: users
+    // Collection: households
+    // Collection: sharedItems
+    // Collection: borrowRequests
+    // Collection: notifications
+    // ===============================================================
+
+    // Helper Functions
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+    
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+
+    function isAdmin() {
+      return isAuthenticated() &&
+        (get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin' ||
+          (request.auth.token.email == "akinbee@gmail.com" && request.auth.token.email_verified == true));
+    }
+
+    function isHouseholdMember(householdId) {
+      return isAuthenticated() && (
+        householdId == 'default-household' || 
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.householdId == householdId
+      );
+    }
+
+    function isHouseholdAdmin(householdId) {
+      return isAuthenticated() && 
+        get(/databases/$(database)/documents/households/$(householdId)).data.adminId == request.auth.uid;
+    }
+
+    function isValidUser(data) {
+      return data.uid is string && data.email is string && data.role in ['admin', 'co-owner', 'member'];
+    }
+
+    function isValidInventoryItem(data) {
+      return data.name is string && data.quantity is number && data.householdId is string;
+    }
+
+    // Rules
+    match /users/{uid} {
+      allow read: if isAuthenticated();
+      allow create: if isOwner(uid) && isValidUser(request.resource.data);
+      allow update: if isOwner(uid) && isValidUser(request.resource.data);
+    }
+
+    match /households/{householdId} {
+      allow read: if isHouseholdMember(householdId);
+      allow create: if isAuthenticated();
+      allow update: if isHouseholdAdmin(householdId) || isHouseholdMember(householdId);
+      allow delete: if isHouseholdAdmin(householdId);
+
+      match /storageLocations/{locationId} {
+        allow read, write: if isHouseholdMember(householdId);
+      }
+      match /inventoryItems/{itemId} {
+        allow read, write: if isHouseholdMember(householdId);
+      }
+      match /shoppingList/{itemId} {
+        allow read, write: if isHouseholdMember(householdId);
+      }
+      match /recipes/{recipeId} {
+        allow read, write: if isHouseholdMember(householdId);
+      }
+      match /mealPlans/{planId} {
+        allow read, write: if isHouseholdMember(householdId);
+      }
+    }
+
+    match /sharedItems/{itemId} {
+      allow read: if isAuthenticated();
+      allow create: if isAuthenticated();
+      allow update, delete: if isAuthenticated() && resource.data.ownerId == request.auth.uid;
+    }
+
+    match /borrowRequests/{requestId} {
+      allow read: if isAuthenticated() && (resource.data.borrowerId == request.auth.uid || resource.data.ownerId == request.auth.uid);
+      allow create: if isAuthenticated();
+      allow update: if isAuthenticated() && (resource.data.borrowerId == request.auth.uid || resource.data.ownerId == request.auth.uid);
+    }
+
+    match /notifications/{notificationId} {
+      allow read, update, delete: if isAuthenticated() && resource.data.userId == request.auth.uid;
+      allow create: if isAuthenticated();
+    }
+  }
+}
