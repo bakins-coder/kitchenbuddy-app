@@ -16,13 +16,13 @@ export default function Layout({ children, user, profile }: LayoutProps) {
   const [showNotifications, setShowNotifications] = useState(false);
 
   return (
-    <div className="min-h-screen bg-orange-50 font-sans text-gray-900 flex flex-col">
+    <div className="min-h-screen bg-linear-to-br from-orange-50 via-white to-rose-50 font-sans text-gray-900 flex flex-col">
       {/* Header */}
-      <header className="bg-white border-b border-orange-100 px-4 py-3 flex items-center justify-between sticky top-0 z-50">
+      <header className="bg-white/80 backdrop-blur-md border-b border-orange-100 px-4 py-3 flex items-center justify-between sticky top-0 z-50">
         <div className="flex items-center gap-2">
           <motion.div
             whileHover={{ scale: 1.1, rotate: 10 }}
-            className="w-10 h-10 bg-orange-500 rounded-xl flex items-center justify-center text-white shadow-lg shadow-orange-200"
+            className="w-10 h-10 bg-linear-to-br from-orange-400 to-rose-400 rounded-xl flex items-center justify-center text-white shadow-lg shadow-orange-200/50"
           >
             <span className="text-xl font-bold">KB</span>
           </motion.div>
@@ -39,13 +39,14 @@ export default function Layout({ children, user, profile }: LayoutProps) {
             />
           </div>
 
-          <button
+          <motion.button
+            whileTap={{ scale: 0.9 }}
             onClick={() => setShowNotifications(!showNotifications)}
             className="p-2 hover:bg-orange-100 rounded-full transition-colors relative"
           >
             <Bell className="w-6 h-6 text-gray-600" />
             <span className="absolute top-2 right-2 w-2 h-2 bg-red-500 rounded-full border-2 border-white"></span>
-          </button>
+          </motion.button>
 
           <div className="flex items-center gap-2 pl-2 border-l border-gray-200">
             {user.photoURL ? (

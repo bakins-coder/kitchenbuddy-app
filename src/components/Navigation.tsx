@@ -1,5 +1,5 @@
 import { NavLink } from 'react-router-dom';
-import { Home, ShoppingCart, Utensils, Users, PieChart } from 'lucide-react';
+import { Home, ShoppingCart, Utensils, Users, PieChart, Settings } from 'lucide-react';
 import { motion } from 'motion/react';
 import { cn } from '../lib/utils';
 
@@ -9,6 +9,7 @@ const navItems = [
   { path: '/recipes', icon: Utensils, label: 'Recipes' },
   { path: '/community', icon: Users, label: 'Community' },
   { path: '/analytics', icon: PieChart, label: 'Stats' },
+  { path: '/household', icon: Settings, label: 'Kitchen' },
 ];
 
 export default function Navigation() {
@@ -26,17 +27,20 @@ export default function Navigation() {
           }
         >
           {({ isActive }) => (
-            <>
+            <motion.div 
+              whileTap={{ scale: 0.9 }}
+              className="flex flex-col items-center gap-1"
+            >
               <item.icon className={cn('w-6 h-6', isActive && 'stroke-[2.5px]')} />
               <span className="text-[10px] font-bold uppercase tracking-wider">{item.label}</span>
               {isActive && (
                 <motion.div
                   layoutId="nav-active"
-                  className="absolute -top-2 w-8 h-1 bg-orange-500 rounded-full"
+                  className="absolute -top-2 w-8 h-1 bg-linear-to-r from-orange-400 to-rose-400 rounded-full"
                   transition={{ type: 'spring', stiffness: 300, damping: 30 }}
                 />
               )}
-            </>
+            </motion.div>
           )}
         </NavLink>
       ))}

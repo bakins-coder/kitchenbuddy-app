@@ -1,10 +1,11 @@
 import { useState, useEffect } from 'react';
 import { collection, query, onSnapshot, addDoc, deleteDoc, doc, updateDoc, where } from 'firebase/firestore';
+import { onAuthStateChanged } from 'firebase/auth';
 import { db, auth } from '../firebase';
 import { SharedItem, BorrowRequest } from '../types';
 import { motion, AnimatePresence } from 'motion/react';
 import { Plus, Trash2, MapPin, Share2, HandHelping, Calendar, MessageCircle, Search, Filter, ShieldCheck } from 'lucide-react';
-import { cn, formatDate } from '../lib/utils';
+import { cn, formatDate, handleFirestoreError, OperationType } from '../lib/utils';
 
 export default function Community() {
   const [items, setItems] = useState<SharedItem[]>([]);
@@ -18,24 +19,37 @@ export default function Community() {
   });
 
   useEffect(() => {
-    if (!auth.currentUser) return;
+    const unsubscribeAuth = onAuthStateChanged(auth, (user) => {
+      if (user) {
+        const sharedPath = 'sharedItems';
+        const q = query(collection(db, sharedPath));
+        const unsubscribe = onSnapshot(q, (snapshot) => {
+          const itemsData = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as SharedItem));
+          setItems(itemsData);
+        }, (error) => {
+          handleFirestoreError(error, OperationType.LIST, sharedPath);
+        });
 
-    const q = query(collection(db, 'sharedItems'));
-    const unsubscribe = onSnapshot(q, (snapshot) => {
-      const itemsData = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as SharedItem));
-      setItems(itemsData);
+        const reqPath = 'borrowRequests';
+        const reqQ = query(collection(db, reqPath), where('borrowerId', '==', user.uid));
+        const reqUnsubscribe = onSnapshot(reqQ, (snapshot) => {
+          const reqData = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as BorrowRequest));
+          setRequests(reqData);
+        }, (error) => {
+          handleFirestoreError(error, OperationType.LIST, reqPath);
+        });
+
+        return () => {
+          unsubscribe();
+          reqUnsubscribe();
+        };
+      } else {
+        setItems([]);
+        setRequests([]);
+      }
     });
 
-    const reqQ = query(collection(db, 'borrowRequests'), where('borrowerId', '==', auth.currentUser.uid));
-    const reqUnsubscribe = onSnapshot(reqQ, (snapshot) => {
-      const reqData = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as BorrowRequest));
-      setRequests(reqData);
-    });
-
-    return () => {
-      unsubscribe();
-      reqUnsubscribe();
-    };
+    return () => unsubscribeAuth();
   }, []);
 
   const handleShareItem = async (e: React.FormEvent) => {
@@ -79,12 +93,13 @@ export default function Community() {
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <h2 className="text-2xl font-black text-orange-900 uppercase tracking-tight">Community Share</h2>
-        <button
+        <motion.button
+          whileTap={{ scale: 0.95 }}
           onClick={() => setShowShareModal(true)}
-          className="bg-orange-500 text-white px-4 py-2 rounded-2xl font-bold text-xs flex items-center gap-2 hover:bg-orange-600 transition-all shadow-lg shadow-orange-200"
+          className="bg-linear-to-r from-orange-400 to-rose-400 text-white px-4 py-2 rounded-2xl font-bold text-xs flex items-center gap-2 hover:from-orange-500 hover:to-rose-500 transition-all shadow-lg shadow-orange-200/50"
         >
           <Plus className="w-4 h-4" /> Share Item
-        </button>
+        </motion.button>
       </div>
 
       {/* Search & Filter */}
@@ -123,7 +138,7 @@ export default function Community() {
                 initial={{ opacity: 0, y: 20 }}
                 animate={{ opacity: 1, y: 0 }}
                 exit={{ opacity: 0, scale: 0.9 }}
-                className="bg-white rounded-[2.5rem] p-6 shadow-sm border border-orange-50 hover:shadow-xl hover:border-orange-200 transition-all group"
+                className="bg-white rounded-[2.5rem] p-6 shadow-[0_8px_30px_rgb(0,0,0,0.04)] border border-orange-50/50 hover:shadow-[0_20px_50px_rgba(249,115,22,0.08)] transition-all group"
               >
                 <div className="flex items-start gap-4">
                   <div className="w-16 h-16 bg-orange-50 rounded-2xl flex items-center justify-center text-3xl">
@@ -156,7 +171,7 @@ export default function Community() {
                   <button
                     onClick={() => handleBorrowRequest(item)}
                     disabled={item.status !== 'available' || item.ownerId === auth.currentUser?.uid}
-                    className="flex-1 bg-orange-500 text-white font-bold py-3 rounded-2xl hover:bg-orange-600 transition-all shadow-lg shadow-orange-200 disabled:opacity-50 flex items-center justify-center gap-2"
+                    className="flex-1 bg-linear-to-r from-orange-400 to-rose-400 text-white font-bold py-3 rounded-2xl hover:from-orange-500 hover:to-rose-500 transition-all shadow-lg shadow-orange-200/50 disabled:opacity-50 flex items-center justify-center gap-2"
                   >
                     <HandHelping className="w-4 h-4" /> Borrow Item
                   </button>
@@ -234,7 +249,7 @@ export default function Community() {
                   </button>
                   <button
                     type="submit"
-                    className="flex-1 bg-orange-500 text-white font-bold py-4 rounded-2xl hover:bg-orange-600 transition-colors shadow-lg shadow-orange-200"
+                    className="flex-1 bg-linear-to-r from-orange-400 to-rose-400 text-white font-bold py-4 rounded-2xl hover:from-orange-500 hover:to-rose-500 transition-colors shadow-lg shadow-orange-200/50"
                   >
                     Share Now
                   </button>

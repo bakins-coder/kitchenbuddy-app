@@ -1,17 +1,72 @@
 import { useState, useEffect, useRef, useMemo } from 'react';
 import { collection, query, where, onSnapshot, addDoc, deleteDoc, doc, updateDoc, writeBatch } from 'firebase/firestore';
+import { onAuthStateChanged } from 'firebase/auth';
 import { db, auth } from '../firebase';
 import { InventoryItem, StorageLocation } from '../types';
 import { motion, AnimatePresence } from 'motion/react';
 import { Plus, Minus, Trash2, Calendar, MapPin, Camera, AlertTriangle, CheckCircle, ChevronRight, Filter, Sparkles, X, Loader2, FileText, ShoppingCart, Bell, Info, Mic, MicOff } from 'lucide-react';
-import { cn, formatDate, getExpiryStatus } from '../lib/utils';
+import { cn, formatDate, getExpiryStatus, handleFirestoreError, OperationType } from '../lib/utils';
 import { Html5Qrcode } from 'html5-qrcode';
 import { GoogleGenerativeAI } from '@google/generative-ai';
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell } from 'recharts';
 
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY || '');
 
+function Storage3D({ type, name, isOpen }: { type: string, name: string, isOpen: boolean }) {
+  const getIcon = () => {
+    switch (type) {
+      case 'fridge': return '❄️';
+      case 'pantry': return '🥫';
+      case 'freezer': return '🧊';
+      case 'shelf': return '📚';
+      default: return '📦';
+    }
+  };
+
+  return (
+    <div className="relative w-32 h-40 perspective-1000 group cursor-pointer">
+      {/* 3D Box Container */}
+      <div className="relative w-full h-full preserve-3d">
+        {/* Door (Front Face) */}
+        <motion.div
+          animate={{ rotateY: isOpen ? -110 : 0 }}
+          transition={{ type: 'spring', damping: 20, stiffness: 100 }}
+          className="absolute inset-0 rounded-xl border-4 flex flex-col items-center justify-center shadow-2xl backface-hidden origin-left z-30"
+          style={{ 
+            backgroundColor: type === 'fridge' ? "#f0f9ff" : "#fff7ed",
+            borderColor: type === 'fridge' ? "#bae6fd" : "#fed7aa"
+          }}
+        >
+          <div className="text-4xl mb-2">{getIcon()}</div>
+          <p className="text-[10px] font-black uppercase tracking-widest text-gray-500">{name}</p>
+          {/* Handle */}
+          <div className="absolute right-2 top-1/2 -translate-y-1/2 w-1.5 h-12 bg-gray-300 rounded-full shadow-inner" />
+        </motion.div>
+
+        {/* Left Side Face */}
+        <div className="absolute left-0 top-0 w-4 h-full bg-gray-300 origin-left -rotate-y-90 z-20" />
+        
+        {/* Right Side Face */}
+        <div className="absolute right-0 top-0 w-4 h-full bg-gray-300 origin-right rotate-y-90 z-20" />
+
+        {/* Inside Face (Back) */}
+        <div className="absolute inset-0 bg-gray-100 rounded-xl border-4 border-gray-200 shadow-inner flex items-center justify-center z-10">
+          <div className="grid grid-cols-2 gap-1 p-2 opacity-40">
+            <div className="w-8 h-8 bg-gray-300 rounded-md" />
+            <div className="w-8 h-8 bg-gray-300 rounded-md" />
+            <div className="w-8 h-8 bg-gray-300 rounded-md" />
+            <div className="w-8 h-8 bg-gray-300 rounded-md" />
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+import { useHousehold } from '../contexts/HouseholdContext';
+
 export default function Inventory() {
+  const { profile } = useHousehold();
   const [items, setItems] = useState<InventoryItem[]>([]);
   const [locations, setLocations] = useState<StorageLocation[]>([]);
   const [activeTab, setActiveTab] = useState<string>('all');
@@ -23,6 +78,8 @@ export default function Inventory() {
   const [scannerMode, setScannerMode] = useState<'barcode' | 'photo' | 'receipt'>('barcode');
   const [isAiScanning, setIsAiScanning] = useState(false);
   const [scannedItems, setScannedItems] = useState<Partial<InventoryItem>[]>([]);
+  const [carouselItems, setCarouselItems] = useState<InventoryItem[]>([]);
+  const [draggedItem, setDraggedItem] = useState<InventoryItem | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [newItem, setNewItem] = useState<Partial<InventoryItem>>({
     name: '',
@@ -76,8 +133,8 @@ export default function Inventory() {
     try {
       const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
       const prompt = `Extract food item details from this voice command: "${text}". 
-      Return a JSON object with: name, quantity (number), unit (string), category (one of: Vegetables, Dairy, Meat, Fruit, Bakery, Pantry, Other), estimatedExpiryDays (number).
-      Example: "Add two liters of milk" -> {"name": "Milk", "quantity": 2, "unit": "liters", "category": "Dairy", "estimatedExpiryDays": 7}`;
+      Return a JSON object with: name, quantity (number), unit (string), category (one of: Vegetables, Dairy, Meat, Fruit, Bakery, Pantry, Other), estimatedExpiryDays (number), macroCategory (one of: Carbohydrate, Protein, Fat, Fiber, Other), glycemicIndex (number).
+      Example: "Add two liters of milk" -> {"name": "Milk", "quantity": 2, "unit": "liters", "category": "Dairy", "estimatedExpiryDays": 7, "macroCategory": "Protein", "glycemicIndex": 27}`;
 
       const result = await model.generateContent(prompt);
       const response = await result.response;
@@ -166,42 +223,55 @@ export default function Inventory() {
   }, [expiringSoonItems, items]);
 
   useEffect(() => {
-    if (!auth.currentUser) return;
+    const unsubscribeAuth = onAuthStateChanged(auth, (user) => {
+      if (user && profile?.householdId) {
+        const itemsPath = `households/${profile.householdId}/inventoryItems`;
+        const qItems = query(collection(db, itemsPath));
+        const unsubscribeItems = onSnapshot(qItems, (snapshot) => {
+          const itemsData = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as InventoryItem));
+          setItems(itemsData);
+        }, (error) => {
+          handleFirestoreError(error, OperationType.LIST, itemsPath);
+        });
 
-    const qItems = query(collection(db, 'households', 'default-household', 'inventoryItems'));
-    const unsubscribeItems = onSnapshot(qItems, (snapshot) => {
-      const itemsData = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as InventoryItem));
-      setItems(itemsData);
-    });
+        const locsPath = `households/${profile.householdId}/storageLocations`;
+        const qLocs = query(collection(db, locsPath));
+        const unsubscribeLocs = onSnapshot(qLocs, (snapshot) => {
+          const locsData = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as StorageLocation));
+          if (locsData.length === 0) {
+            // Seed default locations if none exist
+            const defaults: Partial<StorageLocation>[] = [
+              { name: 'Fridge', type: 'fridge', householdId: profile.householdId! },
+              { name: 'Pantry', type: 'pantry', householdId: profile.householdId! },
+              { name: 'Freezer', type: 'freezer', householdId: profile.householdId! },
+            ];
+            defaults.forEach(d => addDoc(collection(db, locsPath), d));
+          }
+          setLocations(locsData);
+        }, (error) => {
+          handleFirestoreError(error, OperationType.LIST, locsPath);
+        });
 
-    const qLocs = query(collection(db, 'households', 'default-household', 'storageLocations'));
-    const unsubscribeLocs = onSnapshot(qLocs, (snapshot) => {
-      const locsData = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as StorageLocation));
-      if (locsData.length === 0) {
-        // Seed default locations if none exist
-        const defaults: Partial<StorageLocation>[] = [
-          { name: 'Fridge', type: 'fridge', householdId: 'default-household' },
-          { name: 'Pantry', type: 'pantry', householdId: 'default-household' },
-          { name: 'Freezer', type: 'freezer', householdId: 'default-household' },
-        ];
-        defaults.forEach(d => addDoc(collection(db, 'households', 'default-household', 'storageLocations'), d));
+        return () => {
+          unsubscribeItems();
+          unsubscribeLocs();
+        };
+      } else {
+        setItems([]);
+        setLocations([]);
       }
-      setLocations(locsData);
     });
 
-    return () => {
-      unsubscribeItems();
-      unsubscribeLocs();
-    };
-  }, []);
+    return () => unsubscribeAuth();
+  }, [profile?.householdId]);
 
   const handleAddLocation = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!auth.currentUser) return;
+    if (!auth.currentUser || !profile?.householdId) return;
     try {
-      await addDoc(collection(db, 'households', 'default-household', 'storageLocations'), {
+      await addDoc(collection(db, `households/${profile.householdId}/storageLocations`), {
         ...newLocation,
-        householdId: 'default-household',
+        householdId: profile.householdId,
       });
       setShowLocationModal(false);
       setNewLocation({ name: '', type: 'fridge' });
@@ -212,8 +282,9 @@ export default function Inventory() {
 
   const handleDeleteLocation = async (id: string) => {
     if (activeTab === id) setActiveTab('all');
+    if (!profile?.householdId) return;
     try {
-      await deleteDoc(doc(db, 'households', 'default-household', 'storageLocations', id));
+      await deleteDoc(doc(db, `households/${profile.householdId}/storageLocations`, id));
     } catch (error) {
       console.error('Error deleting location:', error);
     }
@@ -295,7 +366,7 @@ export default function Inventory() {
     try {
       const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
       const result = await model.generateContent({
-        contents: [{ role: 'user', parts: [{ text: `Identify the product with barcode ${barcode}. Return a JSON object with 'name', 'category' (one of: Vegetables, Dairy, Meat, Fruits, Pantry), 'quantity' (number), 'unit', 'estimatedExpiryDays' (number), and 'lowStockThreshold' (number, default to 1).` }] }],
+        contents: [{ role: 'user', parts: [{ text: `Identify the product with barcode ${barcode}. Return a JSON object with 'name', 'category' (one of: Vegetables, Dairy, Meat, Fruits, Pantry), 'quantity' (number), 'unit', 'estimatedExpiryDays' (number), 'lowStockThreshold' (number, default to 1), 'macroCategory' (one of: Carbohydrate, Protein, Fat, Fiber, Other), 'glycemicIndex' (number).` }] }],
         generationConfig: {
           responseMimeType: 'application/json',
           responseSchema: {
@@ -307,8 +378,10 @@ export default function Inventory() {
               unit: { type: "string" },
               estimatedExpiryDays: { type: "number" },
               lowStockThreshold: { type: "number" },
+              macroCategory: { type: "string" },
+              glycemicIndex: { type: "number" },
             },
-            required: ['name', 'category', 'quantity', 'unit'],
+            required: ['name', 'category', 'quantity', 'unit', 'macroCategory', 'glycemicIndex'],
           } as any,
         },
       });
@@ -351,8 +424,8 @@ export default function Inventory() {
         
         const isReceipt = scannerMode === 'receipt';
         const prompt = isReceipt 
-          ? "Analyze this grocery receipt. Extract all food items. For each item, return a JSON object with 'name', 'category' (one of: Vegetables, Dairy, Meat, Fruits, Pantry), 'quantity' (number), 'unit', 'estimatedExpiryDays' (number), and 'lowStockThreshold' (number, default to 1). Return an array of these objects."
-          : "Identify the food items in this photo. Return a JSON object with 'name', 'category' (one of: Vegetables, Dairy, Meat, Fruits, Pantry), 'quantity' (number), 'unit', 'estimatedExpiryDays' (number), and 'lowStockThreshold' (number, default to 1). If multiple items, just pick the most prominent one.";
+          ? "Analyze this grocery receipt. Extract all food items. For each item, return a JSON object with 'name', 'category' (one of: Vegetables, Dairy, Meat, Fruits, Pantry), 'quantity' (number), 'unit', 'estimatedExpiryDays' (number), 'lowStockThreshold' (number, default to 1), 'macroCategory' (one of: Carbohydrate, Protein, Fat, Fiber, Other), 'glycemicIndex' (number). Return an array of these objects."
+          : "Identify the food items in this photo. Return a JSON object with 'name', 'category' (one of: Vegetables, Dairy, Meat, Fruits, Pantry), 'quantity' (number), 'unit', 'estimatedExpiryDays' (number), 'lowStockThreshold' (number, default to 1), 'macroCategory' (one of: Carbohydrate, Protein, Fat, Fiber, Other), 'glycemicIndex' (number). If multiple items, just pick the most prominent one.";
 
         const model = genAI.getGenerativeModel({ model: 'gemini-1.5-flash' });
         const result = await model.generateContent({
@@ -383,8 +456,10 @@ export default function Inventory() {
                   unit: { type: "string" },
                   estimatedExpiryDays: { type: "number" },
                   lowStockThreshold: { type: "number" },
+                  macroCategory: { type: "string" },
+                  glycemicIndex: { type: "number" },
                 },
-                required: ['name', 'category', 'quantity', 'unit'],
+                required: ['name', 'category', 'quantity', 'unit', 'macroCategory', 'glycemicIndex'],
               }
             } : {
               type: "object",
@@ -395,8 +470,10 @@ export default function Inventory() {
                 unit: { type: "string" },
                 estimatedExpiryDays: { type: "number" },
                 lowStockThreshold: { type: "number" },
+                macroCategory: { type: "string" },
+                glycemicIndex: { type: "number" },
               },
-              required: ['name', 'category', 'quantity', 'unit'],
+              required: ['name', 'category', 'quantity', 'unit', 'macroCategory', 'glycemicIndex'],
             }) as any,
           },
         });
@@ -439,6 +516,73 @@ export default function Inventory() {
   const [showConsumeModal, setShowConsumeModal] = useState<string | null>(null);
   const [consumeAmount, setConsumeAmount] = useState<number>(1);
   const [lastAction, setLastAction] = useState<'add' | 'delete' | null>(null);
+  const [isAiConsuming, setIsAiConsuming] = useState(false);
+  const consumeFileInputRef = useRef<HTMLInputElement>(null);
+
+  const handleVisualConsume = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file || !showConsumeModal) return;
+
+    const item = items.find(i => i.id === showConsumeModal);
+    if (!item) return;
+
+    setIsAiConsuming(true);
+    try {
+      const reader = new FileReader();
+      reader.onloadend = async () => {
+        const base64Data = (reader.result as string).split(',')[1];
+        
+        const prompt = `Look at this photo of ${item.name}. Estimate the REMAINING quantity left in the container. 
+        The unit of measurement is ${item.unit}. 
+        Return a JSON object with 'remainingQuantity' (number) and a brief 'reasoning' (string).
+        Be as accurate as possible based on the visual evidence.`;
+
+        const model = genAI.getGenerativeModel({ model: 'gemini-1.5-flash' });
+        const result = await model.generateContent({
+          contents: [
+            {
+              role: 'user',
+              parts: [
+                {
+                  inlineData: {
+                    data: base64Data,
+                    mimeType: file.type,
+                  },
+                },
+                { text: prompt },
+              ],
+            },
+          ],
+          generationConfig: {
+            responseMimeType: 'application/json',
+            responseSchema: {
+              type: "object",
+              properties: {
+                remainingQuantity: { type: "number" },
+                reasoning: { type: "string" },
+              },
+              required: ['remainingQuantity'],
+            } as any,
+          },
+        });
+
+        const response = await result.response;
+        const data = JSON.parse(response.text() || '{}');
+        
+        if (data.remainingQuantity !== undefined) {
+          await handleUpdateQuantity(showConsumeModal, data.remainingQuantity);
+          alert(`Chef Buddy estimated ${data.remainingQuantity} ${item.unit} remaining. ${data.reasoning || ''}`);
+          setShowConsumeModal(null);
+        }
+      };
+      reader.readAsDataURL(file);
+    } catch (error) {
+      console.error("AI Consumption Scan error:", error);
+      alert("Chef Buddy couldn't quite see how much is left. Try manual entry!");
+    } finally {
+      setIsAiConsuming(false);
+    }
+  };
 
   const handleConsume = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -453,15 +597,15 @@ export default function Inventory() {
   };
 
   const handleAddScannedItems = async () => {
-    if (!auth.currentUser || scannedItems.length === 0) return;
+    if (!auth.currentUser || scannedItems.length === 0 || !profile?.householdId) return;
     
     try {
       const batch = writeBatch(db);
       scannedItems.forEach(item => {
-        const docRef = doc(collection(db, 'households', 'default-household', 'inventoryItems'));
+        const docRef = doc(collection(db, `households/${profile.householdId}/inventoryItems`));
         batch.set(docRef, {
           ...item,
-          householdId: 'default-household',
+          householdId: profile.householdId,
           storageLocationId: newItem.storageLocationId || (activeTab === 'all' ? (locations[0]?.id || 'fridge') : activeTab),
         });
       });
@@ -477,12 +621,12 @@ export default function Inventory() {
 
   const handleAddItem = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!auth.currentUser) return;
+    if (!auth.currentUser || !profile?.householdId) return;
 
     try {
-      await addDoc(collection(db, 'households', 'default-household', 'inventoryItems'), {
+      await addDoc(collection(db, `households/${profile.householdId}/inventoryItems`), {
         ...newItem,
-        householdId: 'default-household',
+        householdId: profile.householdId,
         storageLocationId: newItem.storageLocationId || (activeTab === 'all' ? (locations[0]?.id || 'fridge') : activeTab),
       });
       setShowAddModal(false);
@@ -493,7 +637,9 @@ export default function Inventory() {
         unit: 'pcs', 
         lowStockThreshold: 1, 
         storageLocationId: '',
-        expiryDate: new Date().toISOString().split('T')[0] 
+        expiryDate: new Date().toISOString().split('T')[0],
+        macroCategory: 'Other',
+        glycemicIndex: 0
       });
       setLastAction('add');
       setTimeout(() => setLastAction(null), 500);
@@ -502,18 +648,46 @@ export default function Inventory() {
     }
   };
 
+  const autoFillItemInfo = async (name: string) => {
+    if (!name || name.length < 3) return;
+    setIsAiScanning(true);
+    try {
+      const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+      const prompt = `Provide nutritional info for "${name}". 
+      Return a JSON object with: category (one of: Vegetables, Dairy, Meat, Fruit, Bakery, Pantry, Other), macroCategory (one of: Carbohydrate, Protein, Fat, Fiber, Other), glycemicIndex (number), estimatedExpiryDays (number).`;
+
+      const result = await model.generateContent(prompt);
+      const data = JSON.parse(result.response.text().replace(/```json|```/g, ''));
+      
+      const expiryDate = new Date();
+      expiryDate.setDate(expiryDate.getDate() + (data.estimatedExpiryDays || 7));
+
+      setNewItem(prev => ({
+        ...prev,
+        category: data.category || prev.category,
+        macroCategory: data.macroCategory || 'Other',
+        glycemicIndex: data.glycemicIndex || 0,
+        expiryDate: expiryDate.toISOString().split('T')[0]
+      }));
+    } catch (error) {
+      console.error("Auto-fill error:", error);
+    } finally {
+      setIsAiScanning(false);
+    }
+  };
+
   const handleUpdateQuantity = async (id: string, newQuantity: number) => {
-    if (newQuantity < 0) return;
+    if (newQuantity < 0 || !profile?.householdId) return;
     try {
       if (newQuantity === 0) {
         // If quantity is 0, we could delete or just keep it at 0. 
         // For now, let's just update it and let the user decide to delete.
-        await updateDoc(doc(db, 'households', 'default-household', 'inventoryItems', id), {
+        await updateDoc(doc(db, `households/${profile.householdId}/inventoryItems`, id), {
           quantity: 0
         });
         setLastAction('delete');
       } else {
-        await updateDoc(doc(db, 'households', 'default-household', 'inventoryItems', id), {
+        await updateDoc(doc(db, `households/${profile.householdId}/inventoryItems`, id), {
           quantity: newQuantity
         });
         setLastAction(newQuantity > items.find(i => i.id === id)!.quantity ? 'add' : 'delete');
@@ -525,8 +699,9 @@ export default function Inventory() {
   };
 
   const handleDeleteItem = async (id: string) => {
+    if (!profile?.householdId) return;
     try {
-      await deleteDoc(doc(db, 'households', 'default-household', 'inventoryItems', id));
+      await deleteDoc(doc(db, `households/${profile.householdId}/inventoryItems`, id));
       setLastAction('delete');
       setTimeout(() => setLastAction(null), 500);
     } catch (error) {
@@ -575,48 +750,102 @@ export default function Inventory() {
       </div>
 
       {/* Categories Tabs */}
-      <div className="flex items-center gap-2 overflow-x-auto pb-2 scrollbar-hide">
-        <button
-          onClick={() => setActiveTab('all')}
-          className={cn(
-            'flex items-center gap-2 px-4 py-2.5 rounded-2xl font-bold text-sm transition-all whitespace-nowrap border-2',
-            activeTab === 'all'
-              ? 'bg-orange-500 border-orange-500 text-white shadow-lg shadow-orange-200'
-              : 'bg-white border-orange-100 text-gray-500 hover:border-orange-300'
-          )}
-        >
-          <span>🏠</span>
-          All
-        </button>
+      <div className="flex items-center gap-6 overflow-x-auto pb-8 scrollbar-hide px-2">
+        <div className="flex flex-col items-center gap-2">
+          <motion.button
+            whileTap={{ scale: 0.95 }}
+            onClick={() => setActiveTab('all')}
+            className={cn(
+              'relative transition-all',
+              activeTab === 'all' ? 'scale-110' : 'opacity-60 grayscale hover:opacity-100 hover:grayscale-0'
+            )}
+          >
+            <Storage3D type="other" name="All" isOpen={activeTab === 'all'} />
+          </motion.button>
+        </div>
+
         {locations.map((loc) => (
-          <div key={loc.id} className="relative group">
-            <button
+          <div key={loc.id} className="flex flex-col items-center gap-2">
+            <motion.button
+              whileTap={{ scale: 0.95 }}
               onClick={() => setActiveTab(loc.id)}
               className={cn(
-                'flex items-center gap-2 px-4 py-2.5 rounded-2xl font-bold text-sm transition-all whitespace-nowrap border-2',
-                activeTab === loc.id
-                  ? 'bg-orange-500 border-orange-500 text-white shadow-lg shadow-orange-200'
-                  : 'bg-white border-orange-100 text-gray-500 hover:border-orange-300'
+                'relative transition-all',
+                activeTab === loc.id ? 'scale-110' : 'opacity-60 grayscale hover:opacity-100 hover:grayscale-0'
               )}
             >
-              <span>{loc.type === 'fridge' ? '❄️' : loc.type === 'pantry' ? '🥫' : loc.type === 'freezer' ? '🧊' : loc.type === 'shelf' ? '📚' : '📦'}</span>
-              {loc.name}
-            </button>
-            <button 
-              onClick={(e) => { e.stopPropagation(); handleDeleteLocation(loc.id); }}
-              className="absolute -top-1 -right-1 bg-red-500 text-white rounded-full p-0.5 opacity-0 group-hover:opacity-100 transition-opacity shadow-sm"
-            >
-              <X className="w-3 h-3" />
-            </button>
+              <Storage3D type={loc.type} name={loc.name} isOpen={activeTab === loc.id} />
+              <motion.button 
+                whileTap={{ scale: 0.9 }}
+                onClick={(e) => { e.stopPropagation(); handleDeleteLocation(loc.id); }}
+                className="absolute -top-2 -right-2 bg-red-500 text-white rounded-full p-1 shadow-lg z-30"
+              >
+                <X className="w-3 h-3" />
+              </motion.button>
+            </motion.button>
           </div>
         ))}
-        <button
+
+        <motion.button
+          whileTap={{ scale: 0.95 }}
           onClick={() => setShowLocationModal(true)}
-          className="flex items-center gap-2 px-4 py-2.5 rounded-2xl font-bold text-sm transition-all whitespace-nowrap border-2 border-dashed border-orange-200 text-orange-400 hover:border-orange-400 hover:text-orange-500"
+          className="w-32 h-40 rounded-2xl border-4 border-dashed border-orange-200 flex flex-col items-center justify-center text-orange-300 hover:border-orange-400 hover:text-orange-400 transition-all shrink-0"
         >
-          <Plus className="w-4 h-4" />
-          Add Location
-        </button>
+          <Plus className="w-8 h-8 mb-2" />
+          <span className="text-[10px] font-black uppercase tracking-widest">Add Space</span>
+        </motion.button>
+      </div>
+
+      {/* Item Carousel Staging Area */}
+      <div className="bg-white/50 backdrop-blur-md rounded-[3rem] p-6 border-4 border-orange-50 shadow-inner">
+        <div className="flex items-center justify-between mb-4 px-4">
+          <h3 className="text-xs font-black text-orange-400 uppercase tracking-[0.2em]">Quick Access Carousel</h3>
+          <div className="flex gap-2">
+            <div className="w-2 h-2 rounded-full bg-orange-200" />
+            <div className="w-2 h-2 rounded-full bg-orange-100" />
+          </div>
+        </div>
+        
+        <div className="flex gap-4 overflow-x-auto pb-4 scrollbar-hide px-2">
+          {items.slice(0, 10).map((item) => (
+            <motion.div
+              key={item.id}
+              drag
+              dragConstraints={{ left: 0, right: 0, top: 0, bottom: 0 }}
+              dragElastic={0.1}
+              onDragStart={() => setDraggedItem(item)}
+              onDragEnd={(e, info) => {
+                setDraggedItem(null);
+                // Logic for "pulling" into sections could be based on drop zones
+                if (info.offset.y > 100) {
+                  setShowConsumeModal(item.id);
+                } else if (info.offset.y < -100) {
+                  setShowAddModal(true);
+                  setNewItem(item);
+                }
+              }}
+              whileHover={{ scale: 1.05, rotate: 2 }}
+              whileDrag={{ scale: 1.1, zIndex: 100 }}
+              className="w-24 h-24 bg-white rounded-2xl shadow-lg border-2 border-orange-50 flex flex-col items-center justify-center p-2 shrink-0 cursor-grab active:cursor-grabbing"
+            >
+              <span className="text-2xl mb-1">
+                {item.category === 'Vegetables' ? '🥦' : item.category === 'Dairy' ? '🥛' : item.category === 'Meat' ? '🥩' : '📦'}
+              </span>
+              <p className="text-[10px] font-bold text-gray-900 truncate w-full text-center">{item.name}</p>
+              <div className="mt-1 px-1.5 py-0.5 bg-orange-50 rounded-full">
+                <p className="text-[8px] font-black text-orange-500 uppercase">{item.macroCategory || 'Other'}</p>
+              </div>
+            </motion.div>
+          ))}
+          {items.length === 0 && (
+            <div className="w-full py-4 text-center text-xs font-bold text-gray-400 italic">
+              Add items to see them in the carousel
+            </div>
+          )}
+        </div>
+        <p className="text-[9px] text-center text-gray-400 font-bold uppercase tracking-widest mt-2">
+          Drag down to consume • Drag up to restock
+        </p>
       </div>
 
       {/* Visual Representation & Expiring Soon */}
@@ -640,6 +869,20 @@ export default function Inventory() {
           <div className="h-[200px] w-full">
             <ResponsiveContainer width="100%" height="100%">
               <BarChart data={chartData}>
+                <defs>
+                  <linearGradient id="gradRed" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="5%" stopColor="#f87171" stopOpacity={0.8}/>
+                    <stop offset="95%" stopColor="#fca5a5" stopOpacity={0.8}/>
+                  </linearGradient>
+                  <linearGradient id="gradOrange" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="5%" stopColor="#fb923c" stopOpacity={0.8}/>
+                    <stop offset="95%" stopColor="#fdba74" stopOpacity={0.8}/>
+                  </linearGradient>
+                  <linearGradient id="gradYellow" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="5%" stopColor="#fbbf24" stopOpacity={0.8}/>
+                    <stop offset="95%" stopColor="#fcd34d" stopOpacity={0.8}/>
+                  </linearGradient>
+                </defs>
                 <XAxis 
                   dataKey="name" 
                   axisLine={false} 
@@ -664,7 +907,7 @@ export default function Inventory() {
                   {chartData.map((entry, index) => (
                     <Cell 
                       key={`cell-${index}`} 
-                      fill={entry.count > 0 ? (index === 0 ? '#ef4444' : index < 3 ? '#f97316' : '#f59e0b') : '#f3f4f6'} 
+                      fill={entry.count > 0 ? (index === 0 ? 'url(#gradRed)' : index < 3 ? 'url(#gradOrange)' : 'url(#gradYellow)') : '#f3f4f6'} 
                     />
                   ))}
                 </Bar>
@@ -678,32 +921,32 @@ export default function Inventory() {
           initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ delay: 0.1 }}
-          className="bg-orange-500 rounded-[2.5rem] p-6 text-white shadow-xl shadow-orange-200 relative overflow-hidden"
+          className="bg-linear-to-br from-orange-300 via-rose-300 to-amber-200 rounded-[2.5rem] p-6 text-white shadow-xl shadow-orange-100/50 relative overflow-hidden"
         >
           <div className="relative z-10">
             <div className="flex items-center gap-2 mb-4">
-              <AlertTriangle className="w-5 h-5" />
-              <h3 className="text-lg font-black uppercase tracking-tight">Expiring Soon</h3>
+              <AlertTriangle className="w-5 h-5 text-white" />
+              <h3 className="text-lg font-black uppercase tracking-tight text-white">Expiring Soon</h3>
             </div>
             
             <div className="space-y-3 max-h-[200px] overflow-y-auto pr-2 custom-scrollbar">
               {expiringSoonItems.length === 0 ? (
-                <div className="py-8 text-center opacity-80">
-                  <p className="text-sm font-bold">All good! No items expiring in the next 3 days.</p>
+                <div className="py-8 text-center">
+                  <p className="text-sm font-bold text-white/90">All good! No items expiring in the next 3 days.</p>
                 </div>
               ) : (
                 expiringSoonItems.map((item) => {
                   const expiry = new Date(item.expiryDate!);
                   const diff = Math.ceil((expiry.getTime() - new Date().getTime()) / (1000 * 60 * 60 * 24));
                   return (
-                    <div key={item.id} className="bg-white/20 backdrop-blur-md p-3 rounded-2xl flex items-center justify-between border border-white/20">
+                    <div key={item.id} className="bg-white/30 backdrop-blur-md p-3 rounded-2xl flex items-center justify-between border border-white/30">
                       <div className="min-w-0">
-                        <p className="font-bold truncate text-sm">{item.name}</p>
-                        <p className="text-[10px] font-bold opacity-80 uppercase tracking-widest">
+                        <p className="font-bold truncate text-sm text-white">{item.name}</p>
+                        <p className="text-[10px] font-bold text-white/80 uppercase tracking-widest">
                           {diff === 0 ? 'Expires Today' : diff === 1 ? 'Expires Tomorrow' : `In ${diff} days`}
                         </p>
                       </div>
-                      <div className="bg-white text-orange-600 px-2 py-1 rounded-lg text-[10px] font-black">
+                      <div className="bg-white/90 text-orange-600 px-2 py-1 rounded-lg text-[10px] font-black shadow-sm">
                         {item.quantity} {item.unit}
                       </div>
                     </div>
@@ -714,7 +957,8 @@ export default function Inventory() {
           </div>
           
           {/* Decorative background circle */}
-          <div className="absolute -bottom-12 -right-12 w-40 h-40 bg-white/10 rounded-full blur-3xl" />
+          <div className="absolute -bottom-12 -right-12 w-48 h-48 bg-white/20 rounded-full blur-3xl" />
+          <div className="absolute -top-12 -left-12 w-32 h-32 bg-orange-200/20 rounded-full blur-2xl" />
         </motion.div>
       </div>
 
@@ -731,10 +975,13 @@ export default function Inventory() {
             initial={{ opacity: 0, scale: 0.9 }}
             animate={{ opacity: 1, scale: 1 }}
             transition={{ delay: i * 0.1 }}
-            className={cn('p-4 rounded-3xl flex flex-col items-center justify-center text-center', stat.color)}
+            className={cn(
+              'p-6 rounded-[2.5rem] flex flex-col items-center justify-center text-center transition-all hover:scale-105 shadow-xl border-4 border-white',
+              stat.color
+            )}
           >
-            <span className="text-2xl font-black">{stat.value}</span>
-            <span className="text-[10px] font-bold uppercase tracking-wider opacity-70">{stat.label}</span>
+            <span className="text-3xl font-black mb-1">{stat.value}</span>
+            <span className="text-[10px] font-black uppercase tracking-[0.2em] opacity-60">{stat.label}</span>
           </motion.div>
         ))}
       </div>
@@ -781,12 +1028,13 @@ export default function Inventory() {
                     <div className="text-6xl mb-4">🛒</div>
                     <h3 className="font-bold text-gray-900">This area is empty!</h3>
                     <p className="text-sm text-gray-500 mt-2">Time to go shopping or add some items.</p>
-                    <button 
+                    <motion.button 
+                      whileTap={{ scale: 0.95 }}
                       onClick={() => setShowAddModal(true)}
                       className="mt-6 bg-orange-500 text-white px-6 py-3 rounded-2xl font-bold hover:bg-orange-600 transition-all shadow-lg shadow-orange-200"
                     >
                       Add First Item
-                    </button>
+                    </motion.button>
                   </motion.div>
                 ) : (
                   filteredItems.map((item) => {
@@ -807,6 +1055,18 @@ export default function Inventory() {
                         <div className="flex-1 min-w-0">
                           <div className="flex items-center gap-2">
                             <h3 className="font-bold text-gray-900 truncate">{item.name}</h3>
+                            <span className={cn(
+                              "text-[8px] font-black px-1.5 py-0.5 rounded-full uppercase tracking-widest",
+                              item.macroCategory === 'Protein' ? "bg-red-100 text-red-600" :
+                              item.macroCategory === 'Carbohydrate' ? "bg-blue-100 text-blue-600" :
+                              item.macroCategory === 'Fat' ? "bg-yellow-100 text-yellow-600" :
+                              item.macroCategory === 'Fiber' ? "bg-green-100 text-green-600" : "bg-gray-100 text-gray-600"
+                            )}>
+                              {item.macroCategory || 'Other'}
+                            </span>
+                            {item.glycemicIndex !== undefined && (
+                              <span className="text-[8px] font-bold text-gray-400">GI: {item.glycemicIndex}</span>
+                            )}
                             {item.quantity === 0 ? (
                               <span className="bg-red-100 text-red-700 text-[8px] font-black px-1.5 py-0.5 rounded-full uppercase tracking-tighter flex items-center gap-0.5">
                                 <AlertTriangle className="w-2 h-2" /> Out of Stock
@@ -857,14 +1117,16 @@ export default function Inventory() {
                               <Minus className="w-3 h-3" />
                             </button>
                           </div>
-                          <button 
+                          <motion.button 
+                            whileTap={{ scale: 0.9 }}
                             onClick={() => handleDeleteItem(item.id)}
                             className="p-2 text-gray-300 hover:text-red-500 hover:bg-red-50 rounded-xl transition-all opacity-0 group-hover:opacity-100"
                           >
                             <Trash2 className="w-5 h-5" />
-                          </button>
+                          </motion.button>
                           {item.quantity === 0 && (
-                            <button 
+                            <motion.button 
+                              whileTap={{ scale: 0.9 }}
                               onClick={async () => {
                                 await addDoc(collection(db, 'households', 'default-household', 'shoppingList'), {
                                   name: item.name,
@@ -880,7 +1142,7 @@ export default function Inventory() {
                               title="Add to Shopping List"
                             >
                               <ShoppingCart className="w-5 h-5" />
-                            </button>
+                            </motion.button>
                           )}
                         </div>
                       </motion.div>
@@ -939,7 +1201,24 @@ export default function Inventory() {
 
               <form onSubmit={handleConsume} className="space-y-6">
                 <div className="space-y-2">
-                  <label className="text-[10px] font-bold text-gray-400 uppercase tracking-widest ml-2">How much did you use?</label>
+                  <div className="flex items-center justify-between">
+                    <label className="text-[10px] font-bold text-gray-400 uppercase tracking-widest ml-2">How much did you use?</label>
+                    <button
+                      type="button"
+                      onClick={() => consumeFileInputRef.current?.click()}
+                      className="flex items-center gap-1 text-[10px] font-black text-orange-500 uppercase tracking-widest hover:bg-orange-50 px-2 py-1 rounded-lg transition-all"
+                    >
+                      <Camera className="w-3 h-3" /> Visual Estimate
+                    </button>
+                    <input
+                      type="file"
+                      accept="image/*"
+                      capture="environment"
+                      className="hidden"
+                      ref={consumeFileInputRef}
+                      onChange={handleVisualConsume}
+                    />
+                  </div>
                   <div className="flex items-center gap-4">
                     <input
                       required
@@ -957,21 +1236,30 @@ export default function Inventory() {
                 </div>
 
                 <div className="grid grid-cols-2 gap-3">
-                  <button
+                  <motion.button
+                    whileTap={{ scale: 0.95 }}
                     type="button"
                     onClick={() => setShowConsumeModal(null)}
                     className="bg-gray-100 text-gray-500 font-bold py-4 rounded-2xl hover:bg-gray-200 transition-colors"
                   >
                     Cancel
-                  </button>
-                  <button
+                  </motion.button>
+                  <motion.button
+                    whileTap={{ scale: 0.95 }}
                     type="submit"
                     className="bg-orange-500 text-white font-bold py-4 rounded-2xl hover:bg-orange-600 transition-colors shadow-lg shadow-orange-200"
                   >
                     Confirm
-                  </button>
+                  </motion.button>
                 </div>
               </form>
+
+              {isAiConsuming && (
+                <div className="absolute inset-0 bg-white/80 backdrop-blur-sm flex flex-col items-center justify-center rounded-[3rem] z-50">
+                  <Loader2 className="w-12 h-12 text-orange-500 animate-spin mb-4" />
+                  <p className="font-bold text-orange-900">Chef Buddy is estimating...</p>
+                </div>
+              )}
             </motion.div>
           </div>
         )}
@@ -1024,7 +1312,8 @@ export default function Inventory() {
                       { id: 'shelf', label: 'Shelf', icon: '📚' },
                       { id: 'other', label: 'Other', icon: '📦' },
                     ].map((type) => (
-                      <button
+                      <motion.button
+                        whileTap={{ scale: 0.95 }}
                         key={type.id}
                         type="button"
                         onClick={() => setNewLocation({ ...newLocation, type: type.id as any })}
@@ -1037,17 +1326,18 @@ export default function Inventory() {
                       >
                         <span className="text-xl">{type.icon}</span>
                         <span className="text-[10px] font-bold uppercase">{type.label}</span>
-                      </button>
+                      </motion.button>
                     ))}
                   </div>
                 </div>
 
-                <button
+                <motion.button
+                  whileTap={{ scale: 0.95 }}
                   type="submit"
                   className="w-full bg-orange-500 text-white font-bold py-4 rounded-2xl hover:bg-orange-600 transition-colors shadow-lg shadow-orange-200 mt-4"
                 >
                   Create Storage
-                </button>
+                </motion.button>
               </form>
             </motion.div>
           </div>
@@ -1159,9 +1449,26 @@ export default function Inventory() {
                       placeholder="e.g. Fresh Milk"
                       value={newItem.name}
                       onChange={e => setNewItem({ ...newItem, name: e.target.value })}
+                      onBlur={(e) => autoFillItemInfo(e.target.value)}
                       className="w-full bg-gray-50 border-2 border-orange-50 rounded-2xl px-4 py-3 focus:outline-none focus:border-orange-500 transition-colors"
                     />
                   </div>
+
+                  {newItem.macroCategory && (
+                    <motion.div 
+                      initial={{ opacity: 0, scale: 0.9 }}
+                      animate={{ opacity: 1, scale: 1 }}
+                      className="flex items-center gap-2 p-3 bg-orange-50 rounded-2xl border border-orange-100"
+                    >
+                      <Sparkles className="w-4 h-4 text-orange-500" />
+                      <div className="flex-1">
+                        <p className="text-[10px] font-black text-orange-900 uppercase tracking-widest">Chef Buddy's Insight</p>
+                        <p className="text-xs text-orange-700 font-medium">
+                          {newItem.name} is a <span className="font-bold">{newItem.macroCategory}</span> with a Glycemic Index of <span className="font-bold">{newItem.glycemicIndex}</span>.
+                        </p>
+                      </div>
+                    </motion.div>
+                  )}
 
                   <div className="grid grid-cols-2 gap-4">
                     <div className="space-y-1">
@@ -1235,25 +1542,28 @@ export default function Inventory() {
                   </div>
 
                   <div className="flex gap-3 pt-4">
-                    <button
+                    <motion.button
+                      whileTap={{ scale: 0.95 }}
                       type="button"
                       onClick={() => setShowAddModal(false)}
                       className="flex-1 bg-gray-100 text-gray-500 font-bold py-4 rounded-2xl hover:bg-gray-200 transition-colors"
                     >
                       Cancel
-                    </button>
-                    <button
+                    </motion.button>
+                    <motion.button
+                      whileTap={{ scale: 0.95 }}
                       type="submit"
                       className="flex-1 bg-orange-500 text-white font-bold py-4 rounded-2xl hover:bg-orange-600 transition-colors shadow-lg shadow-orange-200"
                     >
                       Save Item
-                    </button>
+                    </motion.button>
                   </div>
                 </form>
               )}
 
               <div className="mt-6 pt-6 border-t border-gray-100 grid grid-cols-3 gap-2">
-                <button 
+                <motion.button 
+                  whileTap={{ scale: 0.9 }}
                   onClick={() => {
                     setScannerMode('barcode');
                     setShowScanner(true);
@@ -1262,8 +1572,9 @@ export default function Inventory() {
                   className="flex flex-col items-center gap-1 text-orange-600 font-bold text-[10px] uppercase tracking-wider hover:bg-orange-50 p-2 rounded-xl transition-colors"
                 >
                   <Camera className="w-5 h-5" /> Barcode
-                </button>
-                <button 
+                </motion.button>
+                <motion.button 
+                  whileTap={{ scale: 0.9 }}
                   onClick={() => {
                     setScannerMode('photo');
                     fileInputRef.current?.click();
@@ -1271,8 +1582,9 @@ export default function Inventory() {
                   className="flex flex-col items-center gap-1 text-orange-600 font-bold text-[10px] uppercase tracking-wider hover:bg-orange-50 p-2 rounded-xl transition-colors"
                 >
                   <Sparkles className="w-5 h-5" /> AI Photo
-                </button>
-                <button 
+                </motion.button>
+                <motion.button 
+                  whileTap={{ scale: 0.9 }}
                   onClick={() => {
                     setScannerMode('receipt');
                     fileInputRef.current?.click();
@@ -1280,7 +1592,7 @@ export default function Inventory() {
                   className="flex flex-col items-center gap-1 text-orange-600 font-bold text-[10px] uppercase tracking-wider hover:bg-orange-50 p-2 rounded-xl transition-colors"
                 >
                   <FileText className="w-5 h-5" /> Receipt
-                </button>
+                </motion.button>
                 <input
                   type="file"
                   accept="image/*"

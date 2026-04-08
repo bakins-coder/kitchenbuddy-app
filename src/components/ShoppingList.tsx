@@ -1,48 +1,65 @@
 import { useState, useEffect } from 'react';
 import { collection, query, onSnapshot, addDoc, deleteDoc, doc, updateDoc, where } from 'firebase/firestore';
+import { onAuthStateChanged } from 'firebase/auth';
 import { db, auth } from '../firebase';
 import { ShoppingListItem, InventoryItem } from '../types';
 import { motion, AnimatePresence } from 'motion/react';
 import { Plus, Trash2, CheckCircle, Circle, ShoppingBag, Sparkles, AlertCircle } from 'lucide-react';
-import { cn } from '../lib/utils';
+import { cn, handleFirestoreError, OperationType } from '../lib/utils';
+
+import { useHousehold } from '../contexts/HouseholdContext';
 
 export default function ShoppingList() {
+  const { profile } = useHousehold();
   const [items, setItems] = useState<ShoppingListItem[]>([]);
   const [inventoryItems, setInventoryItems] = useState<InventoryItem[]>([]);
   const [newItemName, setNewItemName] = useState('');
 
   useEffect(() => {
-    if (!auth.currentUser) return;
+    const unsubscribeAuth = onAuthStateChanged(auth, (user) => {
+      if (user && profile?.householdId) {
+        const shoppingPath = `households/${profile.householdId}/shoppingList`;
+        const q = query(collection(db, shoppingPath));
+        const unsubscribe = onSnapshot(q, (snapshot) => {
+          const itemsData = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as ShoppingListItem));
+          setItems(itemsData);
+        }, (error) => {
+          handleFirestoreError(error, OperationType.LIST, shoppingPath);
+        });
 
-    const q = query(collection(db, 'households', 'default-household', 'shoppingList'));
-    const unsubscribe = onSnapshot(q, (snapshot) => {
-      const itemsData = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as ShoppingListItem));
-      setItems(itemsData);
+        const invPath = `households/${profile.householdId}/inventoryItems`;
+        const invQ = query(collection(db, invPath));
+        const invUnsubscribe = onSnapshot(invQ, (snapshot) => {
+          const invData = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as InventoryItem));
+          setInventoryItems(invData);
+        }, (error) => {
+          handleFirestoreError(error, OperationType.LIST, invPath);
+        });
+
+        return () => {
+          unsubscribe();
+          invUnsubscribe();
+        };
+      } else {
+        setItems([]);
+        setInventoryItems([]);
+      }
     });
 
-    const invQ = query(collection(db, 'households', 'default-household', 'inventoryItems'));
-    const invUnsubscribe = onSnapshot(invQ, (snapshot) => {
-      const invData = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as InventoryItem));
-      setInventoryItems(invData);
-    });
-
-    return () => {
-      unsubscribe();
-      invUnsubscribe();
-    };
-  }, []);
+    return () => unsubscribeAuth();
+  }, [profile?.householdId]);
 
   const handleAddItem = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!newItemName.trim() || !auth.currentUser) return;
+    if (!newItemName.trim() || !auth.currentUser || !profile?.householdId) return;
 
     try {
-      await addDoc(collection(db, 'households', 'default-household', 'shoppingList'), {
+      await addDoc(collection(db, `households/${profile.householdId}/shoppingList`), {
         name: newItemName,
         quantity: 1,
         unit: 'pcs',
         status: 'pending',
-        householdId: 'default-household',
+        householdId: profile.householdId,
         addedBy: auth.currentUser.uid,
       });
       setNewItemName('');
@@ -52,8 +69,9 @@ export default function ShoppingList() {
   };
 
   const toggleStatus = async (item: ShoppingListItem) => {
+    if (!profile?.householdId) return;
     try {
-      await updateDoc(doc(db, 'households', 'default-household', 'shoppingList', item.id), {
+      await updateDoc(doc(db, `households/${profile.householdId}/shoppingList`, item.id), {
         status: item.status === 'pending' ? 'bought' : 'pending',
       });
     } catch (error) {
@@ -62,8 +80,9 @@ export default function ShoppingList() {
   };
 
   const handleDeleteItem = async (id: string) => {
+    if (!profile?.householdId) return;
     try {
-      await deleteDoc(doc(db, 'households', 'default-household', 'shoppingList', id));
+      await deleteDoc(doc(db, `households/${profile.householdId}/shoppingList`, id));
     } catch (error) {
       console.error('Error deleting item:', error);
     }
@@ -75,8 +94,8 @@ export default function ShoppingList() {
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <h2 className="text-2xl font-black text-orange-900 uppercase tracking-tight">Shopping List</h2>
-        <div className="bg-orange-100 px-3 py-1 rounded-full flex items-center gap-2">
-          <ShoppingBag className="w-4 h-4 text-orange-600" />
+        <div className="bg-orange-50 px-3 py-1 rounded-full flex items-center gap-2 border border-orange-100">
+          <ShoppingBag className="w-4 h-4 text-orange-400" />
           <span className="text-xs font-bold text-orange-700">{items.filter(i => i.status === 'pending').length} items</span>
         </div>
       </div>
@@ -90,12 +109,13 @@ export default function ShoppingList() {
           onChange={e => setNewItemName(e.target.value)}
           className="w-full bg-white border-4 border-orange-100 rounded-3xl px-6 py-4 pr-16 focus:outline-none focus:border-orange-500 transition-all shadow-sm"
         />
-        <button
+        <motion.button
+          whileTap={{ scale: 0.9 }}
           type="submit"
-          className="absolute right-3 top-1/2 -translate-y-1/2 bg-orange-500 text-white p-2 rounded-2xl hover:bg-orange-600 transition-all shadow-lg shadow-orange-200"
+          className="absolute right-3 top-1/2 -translate-y-1/2 bg-linear-to-r from-orange-400 to-rose-400 text-white p-2 rounded-2xl hover:from-orange-500 hover:to-rose-500 transition-all shadow-lg shadow-orange-200/50"
         >
           <Plus className="w-6 h-6" />
-        </button>
+        </motion.button>
       </form>
 
       {/* Smart Suggestions */}
@@ -111,12 +131,13 @@ export default function ShoppingList() {
               <button
                 key={item.id}
                 onClick={async () => {
-                  await addDoc(collection(db, 'households', 'default-household', 'shoppingList'), {
+                  if (!profile?.householdId) return;
+                  await addDoc(collection(db, `households/${profile.householdId}/shoppingList`), {
                     name: item.name,
                     quantity: 1,
                     unit: item.unit,
                     status: 'pending',
-                    householdId: 'default-household',
+                    householdId: profile.householdId,
                     addedBy: auth.currentUser?.uid,
                   });
                 }}
@@ -151,11 +172,12 @@ export default function ShoppingList() {
                 animate={{ opacity: 1, y: 0 }}
                 exit={{ opacity: 0, scale: 0.9 }}
                 className={cn(
-                  "bg-white rounded-3xl p-4 flex items-center gap-4 shadow-sm border transition-all group",
-                  item.status === 'bought' ? 'opacity-50 border-gray-100' : 'border-orange-50 hover:shadow-md'
+                  "bg-white rounded-3xl p-4 flex items-center gap-4 shadow-[0_8px_30px_rgb(0,0,0,0.04)] border border-orange-50/50 transition-all group hover:shadow-[0_20px_50px_rgba(249,115,22,0.08)]",
+                  item.status === 'bought' ? 'opacity-50 border-gray-100' : 'border-orange-50'
                 )}
               >
-                <button
+                <motion.button
+                  whileTap={{ scale: 0.9 }}
                   onClick={() => toggleStatus(item)}
                   className={cn(
                     "w-8 h-8 rounded-xl flex items-center justify-center transition-all",
@@ -163,7 +185,7 @@ export default function ShoppingList() {
                   )}
                 >
                   {item.status === 'bought' ? <CheckCircle className="w-5 h-5" /> : <Circle className="w-5 h-5" />}
-                </button>
+                </motion.button>
 
                 <div className="flex-1 min-w-0">
                   <h3 className={cn("font-bold text-gray-900 truncate", item.status === 'bought' && 'line-through text-gray-400')}>
@@ -174,12 +196,13 @@ export default function ShoppingList() {
                   </p>
                 </div>
 
-                <button
+                <motion.button
+                  whileTap={{ scale: 0.9 }}
                   onClick={() => handleDeleteItem(item.id)}
                   className="p-2 text-gray-300 hover:text-red-500 hover:bg-red-50 rounded-xl transition-all opacity-0 group-hover:opacity-100"
                 >
                   <Trash2 className="w-5 h-5" />
-                </button>
+                </motion.button>
               </motion.div>
             ))
           )}

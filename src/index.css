@@ -9,6 +9,26 @@
   }
 }
 
+@utility perspective-1000 {
+  perspective: 1000px;
+}
+
+@utility preserve-3d {
+  transform-style: preserve-3d;
+}
+
+@utility backface-hidden {
+  backface-visibility: hidden;
+}
+
+@utility rotate-y-90 {
+  transform: rotateY(90deg);
+}
+
+@utility -rotate-y-90 {
+  transform: rotateY(-90deg);
+}
+
 @layer base {
   .custom-scrollbar::-webkit-scrollbar {
     width: 4px;

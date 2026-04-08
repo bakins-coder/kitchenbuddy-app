@@ -28,8 +28,7 @@ service cloud.firestore {
 
     function isHouseholdMember(householdId) {
       return isAuthenticated() && (
-        householdId == 'default-household' || 
-        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.householdId == householdId
+        get(/databases/$(database)/documents/households/$(householdId)).data.members.hasAny([request.auth.uid])
       );
     }
 
@@ -42,8 +41,8 @@ service cloud.firestore {
       return data.uid is string && data.email is string && data.role in ['admin', 'co-owner', 'member'];
     }
 
-    function isValidInventoryItem(data) {
-      return data.name is string && data.quantity is number && data.householdId is string;
+    function isValidHousehold(data) {
+      return data.name is string && data.adminId == request.auth.uid && data.members is list;
     }
 
     // Rules
@@ -55,8 +54,8 @@ service cloud.firestore {
 
     match /households/{householdId} {
       allow read: if isHouseholdMember(householdId);
-      allow create: if isAuthenticated();
-      allow update: if isHouseholdAdmin(householdId) || isHouseholdMember(householdId);
+      allow create: if isAuthenticated() && isValidHousehold(request.resource.data);
+      allow update: if isHouseholdAdmin(householdId) || (isAuthenticated() && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['members']));
       allow delete: if isHouseholdAdmin(householdId);
 
       match /storageLocations/{locationId} {

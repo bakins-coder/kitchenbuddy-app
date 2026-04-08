@@ -16,92 +16,89 @@ import ShoppingList from './components/ShoppingList';
 import Recipes from './components/Recipes';
 import Community from './components/Community';
 import Analytics from './components/Analytics';
+import HouseholdSettings from './components/HouseholdSettings';
 import Auth from './components/Auth';
 import { motion, AnimatePresence } from 'motion/react';
+import { HouseholdProvider, useHousehold } from './contexts/HouseholdContext';
 
-export default function App() {
-  const [user, setUser] = useState<User | null>(null);
-  const [profile, setProfile] = useState<UserProfile | null>(null);
-  const [loading, setLoading] = useState(true);
+function AppContent() {
+  const { user, profile, loading } = useHousehold();
+  const [isInitializing, setIsInitializing] = useState(true);
 
   useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
-      setUser(firebaseUser);
-      if (firebaseUser) {
-        // Ensure default household exists
-        const householdRef = doc(db, 'households', 'default-household');
-        const householdDoc = await getDoc(householdRef);
-        if (!householdDoc.exists()) {
+    const init = async () => {
+      if (user && !profile && !loading) {
+        const userRef = doc(db, 'users', user.uid);
+        const userDoc = await getDoc(userRef);
+        
+        if (!userDoc.exists()) {
+          const householdId = `household_${user.uid}`;
+          const householdRef = doc(db, 'households', householdId);
+          
           await setDoc(householdRef, {
-            name: 'Default Household',
-            adminId: firebaseUser.uid,
-            members: [firebaseUser.uid],
+            name: `${user.displayName || 'My'}'s Kitchen`,
+            adminId: user.uid,
+            members: [user.uid],
           });
-        }
 
-        const userDoc = await getDoc(doc(db, 'users', firebaseUser.uid));
-        if (userDoc.exists()) {
-          const data = userDoc.data() as UserProfile;
-          if (!data.householdId) {
-            await setDoc(doc(db, 'users', firebaseUser.uid), { ...data, householdId: 'default-household' }, { merge: true });
-            setProfile({ ...data, householdId: 'default-household' });
-          } else {
-            setProfile(data);
-          }
-        } else {
           const newProfile: UserProfile = {
-            uid: firebaseUser.uid,
-            displayName: firebaseUser.displayName || 'User',
-            email: firebaseUser.email || '',
-            photoURL: firebaseUser.photoURL || '',
+            uid: user.uid,
+            displayName: user.displayName || 'User',
+            email: user.email || '',
+            photoURL: user.photoURL || '',
             role: 'admin',
             dietaryPreferences: [],
-            householdId: 'default-household',
+            householdId: householdId,
           };
-          await setDoc(doc(db, 'users', firebaseUser.uid), newProfile);
-          setProfile(newProfile);
+          await setDoc(userRef, newProfile);
         }
-      } else {
-        setProfile(null);
       }
-      setLoading(false);
-    });
+      if (!loading) setIsInitializing(false);
+    };
+    init();
+  }, [user, profile, loading]);
 
-    return () => unsubscribe();
-  }, []);
-
-  if (loading) {
+  if (loading || isInitializing) {
     return (
-      <div className="flex items-center justify-center min-h-screen bg-orange-50">
+      <div className="flex items-center justify-center min-h-screen bg-linear-to-br from-orange-50 via-white to-rose-50">
         <motion.div
           animate={{ rotate: 360 }}
           transition={{ repeat: Infinity, duration: 1, ease: 'linear' }}
-          className="w-12 h-12 border-4 border-orange-500 border-t-transparent rounded-full"
+          className="w-12 h-12 border-4 border-orange-300 border-t-transparent rounded-full"
         />
       </div>
     );
   }
 
   return (
+    <AnimatePresence mode="wait">
+      {!user ? (
+        <Auth key="auth" />
+      ) : (
+        <Layout key="layout" user={user} profile={profile}>
+          <ErrorBoundary>
+            <Routes>
+              <Route path="/" element={<Inventory />} />
+              <Route path="/shopping" element={<ShoppingList />} />
+              <Route path="/recipes" element={<Recipes />} />
+              <Route path="/community" element={<Community />} />
+              <Route path="/analytics" element={<Analytics />} />
+              <Route path="/household" element={<HouseholdSettings />} />
+              <Route path="*" element={<Navigate to="/" />} />
+            </Routes>
+          </ErrorBoundary>
+        </Layout>
+      )}
+    </AnimatePresence>
+  );
+}
+
+export default function App() {
+  return (
     <Router>
-      <AnimatePresence mode="wait">
-        {!user ? (
-          <Auth key="auth" />
-        ) : (
-          <Layout key="layout" user={user} profile={profile}>
-            <ErrorBoundary>
-              <Routes>
-                <Route path="/" element={<Inventory />} />
-                <Route path="/shopping" element={<ShoppingList />} />
-                <Route path="/recipes" element={<Recipes />} />
-                <Route path="/community" element={<Community />} />
-                <Route path="/analytics" element={<Analytics />} />
-                <Route path="*" element={<Navigate to="/" />} />
-              </Routes>
-            </ErrorBoundary>
-          </Layout>
-        )}
-      </AnimatePresence>
+      <HouseholdProvider>
+        <AppContent />
+      </HouseholdProvider>
     </Router>
   );
 }

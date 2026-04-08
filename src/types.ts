@@ -38,6 +38,7 @@ export interface InventoryItem {
   nutritionalScore?: string;
   calories?: number;
   glycemicIndex?: number;
+  macroCategory?: 'Carbohydrate' | 'Protein' | 'Fat' | 'Fiber' | 'Other';
 }
 
 export interface ShoppingListItem {

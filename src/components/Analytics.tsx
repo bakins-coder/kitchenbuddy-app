@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import { collection, query, onSnapshot, where } from 'firebase/firestore';
+import { onAuthStateChanged } from 'firebase/auth';
 import { db, auth } from '../firebase';
 import { InventoryItem } from '../types';
 import { motion } from 'motion/react';
@@ -7,23 +8,32 @@ import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContaine
 import { TrendingUp, Trash2, DollarSign, PieChart as PieChartIcon, ArrowUpRight, ArrowDownRight } from 'lucide-react';
 import { cn, handleFirestoreError, OperationType } from '../lib/utils';
 
+import { useHousehold } from '../contexts/HouseholdContext';
+
 export default function Analytics() {
+  const { profile } = useHousehold();
   const [items, setItems] = useState<InventoryItem[]>([]);
 
   useEffect(() => {
-    if (!auth.currentUser) return;
+    const unsubscribeAuth = onAuthStateChanged(auth, (user) => {
+      if (user && profile?.householdId) {
+        const path = `households/${profile.householdId}/inventoryItems`;
+        const q = query(collection(db, path));
+        const unsubscribe = onSnapshot(q, (snapshot) => {
+          const itemsData = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as InventoryItem));
+          setItems(itemsData);
+        }, (error) => {
+          handleFirestoreError(error, OperationType.LIST, path);
+        });
 
-    const path = 'households/default-household/inventoryItems';
-    const q = query(collection(db, path));
-    const unsubscribe = onSnapshot(q, (snapshot) => {
-      const itemsData = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as InventoryItem));
-      setItems(itemsData);
-    }, (error) => {
-      handleFirestoreError(error, OperationType.GET, path);
+        return () => unsubscribe();
+      } else {
+        setItems([]);
+      }
     });
 
-    return () => unsubscribe();
-  }, []);
+    return () => unsubscribeAuth();
+  }, [profile?.householdId]);
 
   const data = [
     { name: 'Mon', value: 12 },
@@ -64,7 +74,7 @@ export default function Analytics() {
             initial={{ opacity: 0, y: 20 }}
             animate={{ opacity: 1, y: 0 }}
             transition={{ delay: i * 0.1 }}
-            className="bg-white rounded-[2rem] p-6 shadow-sm border border-orange-50 flex flex-col gap-4"
+            className="bg-white rounded-[2rem] p-6 shadow-[0_8px_30px_rgb(0,0,0,0.04)] border border-orange-50/50 flex flex-col gap-4 hover:shadow-[0_20px_50px_rgba(249,115,22,0.08)] transition-all"
           >
             <div className="flex items-center justify-between">
               <div className={cn("p-3 rounded-2xl", card.color)}>
@@ -84,12 +94,12 @@ export default function Analytics() {
       </div>
 
       {/* Weekly Consumption Chart */}
-      <div className="bg-white rounded-[3rem] p-8 shadow-sm border border-orange-50">
+      <div className="bg-white rounded-[3rem] p-8 shadow-[0_8px_30px_rgb(0,0,0,0.04)] border border-orange-50/50">
         <div className="flex items-center justify-between mb-8">
           <h3 className="font-black text-orange-900 uppercase tracking-tight">Weekly Consumption</h3>
           <div className="flex gap-2">
             <div className="flex items-center gap-1">
-              <div className="w-2 h-2 bg-orange-500 rounded-full"></div>
+              <div className="w-2 h-2 bg-linear-to-r from-orange-400 to-rose-400 rounded-full"></div>
               <span className="text-[8px] font-bold text-gray-400 uppercase">This Week</span>
             </div>
           </div>
@@ -97,6 +107,12 @@ export default function Analytics() {
         <div className="h-64 w-full">
           <ResponsiveContainer width="100%" height="100%">
             <BarChart data={data}>
+              <defs>
+                <linearGradient id="colorOrange" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="5%" stopColor="#fb923c" stopOpacity={0.8}/>
+                  <stop offset="95%" stopColor="#fda4af" stopOpacity={0.8}/>
+                </linearGradient>
+              </defs>
               <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f3f4f6" />
               <XAxis 
                 dataKey="name" 
@@ -110,7 +126,7 @@ export default function Analytics() {
                 cursor={{ fill: '#fff7ed' }}
                 contentStyle={{ borderRadius: '1rem', border: 'none', boxShadow: '0 10px 15px -3px rgb(0 0 0 / 0.1)', fontSize: '12px', fontWeight: 'bold' }}
               />
-              <Bar dataKey="value" fill="#f97316" radius={[10, 10, 10, 10]} barSize={32} />
+              <Bar dataKey="value" fill="url(#colorOrange)" radius={[10, 10, 10, 10]} barSize={32} />
             </BarChart>
           </ResponsiveContainer>
         </div>
@@ -118,7 +134,7 @@ export default function Analytics() {
 
       {/* Category Distribution */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-        <div className="bg-white rounded-[3rem] p-8 shadow-sm border border-orange-50">
+        <div className="bg-white rounded-[3rem] p-8 shadow-[0_8px_30px_rgb(0,0,0,0.04)] border border-orange-50/50">
           <h3 className="font-black text-orange-900 uppercase tracking-tight mb-6">Category Mix</h3>
           <div className="h-64 w-full">
             <ResponsiveContainer width="100%" height="100%">
@@ -150,7 +166,7 @@ export default function Analytics() {
           </div>
         </div>
 
-        <div className="bg-white rounded-[3rem] p-8 shadow-sm border border-orange-50">
+        <div className="bg-white rounded-[3rem] p-8 shadow-[0_8px_30px_rgb(0,0,0,0.04)] border border-orange-50/50">
           <h3 className="font-black text-orange-900 uppercase tracking-tight mb-6">Top Consumed Items</h3>
           <div className="space-y-4">
             {[
