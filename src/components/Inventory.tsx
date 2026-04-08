@@ -765,7 +765,7 @@ export default function Inventory() {
         </div>
 
         {locations.map((loc) => (
-          <div key={loc.id} className="flex flex-col items-center gap-2">
+          <div key={loc.id} className="flex flex-col items-center gap-2 relative">
             <motion.button
               whileTap={{ scale: 0.95 }}
               onClick={() => setActiveTab(loc.id)}
@@ -775,13 +775,13 @@ export default function Inventory() {
               )}
             >
               <Storage3D type={loc.type} name={loc.name} isOpen={activeTab === loc.id} />
-              <motion.button 
-                whileTap={{ scale: 0.9 }}
-                onClick={(e) => { e.stopPropagation(); handleDeleteLocation(loc.id); }}
-                className="absolute -top-2 -right-2 bg-red-500 text-white rounded-full p-1 shadow-lg z-30"
-              >
-                <X className="w-3 h-3" />
-              </motion.button>
+            </motion.button>
+            <motion.button 
+              whileTap={{ scale: 0.9 }}
+              onClick={(e) => { e.stopPropagation(); handleDeleteLocation(loc.id); }}
+              className="absolute -top-2 -right-2 bg-red-500 text-white rounded-full p-1 shadow-lg z-30"
+            >
+              <X className="w-3 h-3" />
             </motion.button>
           </div>
         ))}
@@ -1128,12 +1128,13 @@ export default function Inventory() {
                             <motion.button 
                               whileTap={{ scale: 0.9 }}
                               onClick={async () => {
-                                await addDoc(collection(db, 'households', 'default-household', 'shoppingList'), {
+                                if (!profile?.householdId) return;
+                                await addDoc(collection(db, `households/${profile.householdId}/shoppingList`), {
                                   name: item.name,
                                   quantity: 1,
                                   unit: item.unit,
                                   status: 'pending',
-                                  householdId: 'default-household',
+                                  householdId: profile.householdId,
                                   addedBy: auth.currentUser?.uid
                                 });
                                 // Optionally delete from inventory or keep as 0
